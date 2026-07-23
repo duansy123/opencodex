@@ -271,7 +271,7 @@ async function handleStart(options: { block?: boolean } = {}) {
       ];
       const r = injectGrokConfig(port, grokModels, config.hostname ? { hostname: config.hostname } : {});
       if (r.changed) console.log(`   + Grok Build config updated (${grokModels.length} models via ~/.grok/config.toml)`);
-      else if (r.skippedReason === "user-owned-provider") console.error(`⚠️  ${r.message}`);
+      else if (!r.ok) console.error(`⚠️  ${r.message}`);
     } catch { /* best-effort — grok integration must never block startup */ }
   } catch { /* best-effort — registry rebuilds on first /v1/models call */ }
   if (options.block ?? true) {
@@ -321,11 +321,20 @@ async function handleEnsure() {
 }
 
 async function handleStop() {
-  const stoppedService = stopServiceIfInstalled();
-  if (stoppedService) console.log("🛑 Service manager stopped (won't respawn).");
+  // Service-manager stop can throw (e.g. OPENCODEX_HOME mismatch guard). That must not
+  // abort the rest of the teardown — proxy stop, Codex restore, env revert, and the
+  // Grok config strip below all still need to run.
+  let stopFailed = false;
+  let stoppedService = false;
+  try {
+    stoppedService = stopServiceIfInstalled();
+    if (stoppedService) console.log("🛑 Service manager stopped (won't respawn).");
+  } catch (err) {
+    stopFailed = true;
+    console.error(`⚠️  Service manager stop failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   const pid = readPid();
-  let stopFailed = false;
   if (pid) {
     try {
       // Graceful-first (management-API drain) — on Windows this is the only path where
@@ -374,6 +383,7 @@ async function handleStop() {
   try {
     const g = stripGrokConfig();
     if (g.changed) console.log(`↩️  ${g.message}`);
+    else if (!g.ok) console.error(`⚠️  ${g.message}`);
   } catch { /* best-effort */ }
   if (stopFailed) process.exit(1);
 }
@@ -541,6 +551,7 @@ switch (command) {
     try {
       const g = stripGrokConfig();
       if (g.changed) console.log(`✅ ${g.message}`);
+      else if (!g.ok) console.error(`⚠️  ${g.message}`);
     } catch { /* best-effort */ }
     console.log("Plain `codex` now runs natively (no proxy). Switch back with: ocx restore back");
     break;
